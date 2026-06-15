@@ -1,6 +1,6 @@
 # Samsung Auto Trader
 
-🤖 한국투자증권(KIS) Open API를 활용한 **삼성전자(005930) 자동매매 시스템**
+ 한국투자증권(KIS) Open API를 활용한 **삼성전자(005930) 자동매매 시스템**
 
 모의투자 계좌에서 ±2,000 KRW 지정가 주문으로 자동 거래하는 간단한 Python 기반 시스템입니다.
 
@@ -30,21 +30,12 @@ pip install -r requirements.txt
 
 ### 2. 환경변수 설정
 
-#### 옵션 A: 로컬 환경변수 설정
-
-```bash
-export GH_APPKEY="your_app_key"
-export GH_APPSECRET="your_app_secret"
-export GH_ACCOUNT="your_account_number"
-```
-
-#### 옵션 B: GitHub Secrets 설정 (Codespace)
+#### GitHub Secrets 설정
 
 GitHub 저장소 > Settings > Secrets and variables > Actions에서 다음 생성:
 - `GH_APPKEY`: 발급받은 Application Key
 - `GH_APPSECRET`: 발급받은 Application Secret
 - `GH_ACCOUNT`: 거래 계좌번호
-
 Codespace에서 실행 시 `gh` CLI를 통해 자동으로 로드됩니다.
 
 ### 3. API 환경 선택 (필수)
@@ -223,15 +214,3 @@ gh secret get GH_APPKEY
 rm samsung_auto_trader/token_cache.json
 python -m samsung_auto_trader.main
 ```
-
-## 📞 지원
-
-한국투자증권 Open API 포털: https://apiportal.koreainvestment.com/
-
-## 📄 라이선스
-
-한국투자증권 샘플 코드 라이선스 참고
-
----
-
-**Happy Trading! 🚀**
