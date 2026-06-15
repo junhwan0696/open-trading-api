@@ -75,6 +75,14 @@ class SamsungAutoTrader:
             available_cash,
             cash_summary,
         )
+                # 주문 체결 상태 확인 및 플래그 리셋 (맨 앞에서 상태 동기화)
+        if self.buy_order_placed and held_quantity > 0:
+            self.logger.info("Buy order filled for %s. Resetting buy_order_placed flag.", self.config.symbol)
+            self.buy_order_placed = False
+        
+        if self.sell_order_placed and held_quantity == 0:
+            self.logger.info("Sell order filled for %s. Resetting sell_order_placed flag.", self.config.symbol)
+            self.sell_order_placed = False
 
         if held_quantity > 0 and not self.sell_order_placed:  # 주식이 있고 매도 주문을 안 넣었으면 
             sell_price = price + self.config.price_margin  # 정해진 마진 붙여 매도 주문 넣음
