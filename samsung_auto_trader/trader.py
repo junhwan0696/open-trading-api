@@ -57,7 +57,7 @@ class SamsungAutoTrader:
             time_module.sleep(self.config.poll_interval_seconds)
 
     def _execute_cycle(self) -> None:
-        price = get_current_price(self.client, self.config.symbol)
+        price = get_current_price(self.client, self.config.symbol)  #현재가 가져옴
         if price is None:
             self.logger.warning("Unable to obtain current price for %s. Skipping cycle.", self.config.symbol)
             return
@@ -76,8 +76,8 @@ class SamsungAutoTrader:
             cash_summary,
         )
 
-        if held_quantity > 0 and not self.sell_order_placed:
-            sell_price = price + self.config.price_margin
+        if held_quantity > 0 and not self.sell_order_placed:  # 주식이 있고 매도 주문을 안 넣었으면 
+            sell_price = price + self.config.price_margin  # 정해진 마진 붙여 매도 주문 넣음
             self.logger.info(
                 "Placing sell order for %s quantity=%s at %s KRW",
                 self.config.symbol,
@@ -89,8 +89,8 @@ class SamsungAutoTrader:
             self._log_post_order_status()
             return
 
-        if held_quantity == 0 and not self.buy_order_placed:
-            buy_price = max(price - self.config.price_margin, 1)
+        if held_quantity == 0 and not self.buy_order_placed:  # 주식이 없고 매수 주문 안 넣었으면
+            buy_price = max(price - self.config.price_margin, 1)  # 현재 가격에서 마진 빼서 주문
             self.logger.info(
                 "Placing buy order for %s quantity=%s at %s KRW",
                 self.config.symbol,
