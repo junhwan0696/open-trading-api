@@ -214,3 +214,8 @@ gh secret get GH_APPKEY
 rm samsung_auto_trader/token_cache.json
 python -m samsung_auto_trader.main
 ```
+
+### 실제 거래 내용
+
+<img width="1276" height="578" alt="image" src="https://github.com/user-attachments/assets/d8bb82d3-b9c1-4fe3-977d-3644e3138714" />
+
