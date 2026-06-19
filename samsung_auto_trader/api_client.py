@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 
 import requests
 from requests import Session
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import Config
 from .logger import get_logger
@@ -14,6 +16,18 @@ class KISApiClient:
         self.config = config
         self.token = token
         self.session = Session()
+        # Configure requests session with retries/backoff for transient network errors
+        retries = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        # Request timeout in seconds (used for both GET and POST)
+        self.request_timeout = 60
         self.logger = get_logger()
 
     def _normalize_tr_id(self, tr_id: str) -> str:
@@ -38,7 +52,7 @@ class KISApiClient:
     def _request_hash_key(self, tr_id: str, payload: Dict[str, Any]) -> str:
         hash_url = f"{self.config.api_root}/uapi/hashkey"
         headers = self._headers(tr_id)
-        response = self.session.post(hash_url, headers=headers, json=payload, timeout=20)
+        response = self.session.post(hash_url, headers=headers, json=payload, timeout=self.request_timeout)
         response.raise_for_status()
         data = response.json()
         hash_value = data.get("HASH")
@@ -59,7 +73,7 @@ class KISApiClient:
         headers = self._headers(tr_id)
         attempt = 0
 
-        while attempt < 2:
+        while attempt < 3:
             attempt += 1
             try:
                 self.logger.debug("Sending request %s %s attempt %d", method, url, attempt)
@@ -70,14 +84,14 @@ class KISApiClient:
                         url,
                         headers=headers,
                         json=params or {},
-                        timeout=20,
+                        timeout=self.request_timeout,
                     )
                 else:
                     response = self.session.get(
                         url,
                         headers=headers,
                         params=params or {},
-                        timeout=20,
+                        timeout=self.request_timeout,
                     )
 
                 if response.status_code != 200:
@@ -88,8 +102,8 @@ class KISApiClient:
                 return response.json()
             except (requests.RequestException, ValueError) as exc:
                 self.logger.error("Request failed for %s: %s", url, exc)
-                if attempt >= 2:
+                if attempt >= 3:
                     raise
-                time.sleep(2)
+                time.sleep(2 ** attempt)
 
         raise RuntimeError("Unable to complete API request")
