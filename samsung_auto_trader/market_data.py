@@ -24,7 +24,11 @@ def get_current_price(client: KISApiClient, symbol: str) -> Optional[float]:
         "FID_COND_MRKT_DIV_CODE": MARKET_DIV,
         "FID_INPUT_ISCD": symbol,
     }
-    response = client.request("GET", PRICE_PATH, params=params, tr_id=PRICE_TR_ID)
+    try:
+        response = client.request("GET", PRICE_PATH, params=params, tr_id=PRICE_TR_ID)
+    except Exception as exc:
+        logger.warning("Price request exception for %s: %s", symbol, exc)
+        return None
     if not response:
         logger.warning("Price request returned no response for %s", symbol)
         return None

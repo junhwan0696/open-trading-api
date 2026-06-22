@@ -1,221 +1,190 @@
 # Samsung Auto Trader
 
- 한국투자증권(KIS) Open API를 활용한 **삼성전자(005930) 자동매매 시스템**
+한국투자증권(KIS) Open API를 활용해 삼성전자(005930)를 자동매매하는 Python 시스템입니다.
 
-모의투자 계좌에서 ±2,000 KRW 지정가 주문으로 자동 거래하는 간단한 Python 기반 시스템입니다.
+이 문서는 자동매매 로직을 중심으로, 핵심 클래스/함수/변수와 파일 간 연동 구조를 설명합니다.
 
-## 🎯 특징
+## 자동매매 로직 개요
 
-- **자동 거래**: 09:10~15:30 거래시간 내에서 자동 주문 실행
-- **지정가 전략**: 현재가 기준 ±2,000 KRW에서 1주씩 매수/매도
-- **토큰 캐싱**: 동일 계정 재인증 최소화로 API 요청 절감
-- **15분 폴링**: 900초(15분) 간격으로 시장가 조회 및 계좌 잔고 확인
-- **GitHub Secrets 자동로드**: Codespace에서 환경변수 자동 설정
-- **GitHub Actions 지원**: 스케줄 실행 또는 수동 트리거
+이 시스템은 기준가(base price)를 중심으로 양방향 지정가 주문(매수/매도)을 배치하고,
+한쪽이 체결되면 반대 주문을 취소한 뒤 새로운 기준가로 다음 사이클을 시작하는 구조입니다.
 
-## 📋 사전 요구사항
+핵심 아이디어:
 
-- Python 3.8+
-- 한국투자증권 Open API 계정 (모의투자/실거래 모두 가능)
-- 계정: APPKEY, APPSECRET, 계좌번호(Account)
+1. 기준가 설정
+2. 기준가 - 마진으로 매수 주문
+3. 기준가 + 마진으로 매도 주문(보유 수량이 있을 때)
+4. 미체결/체결 상태를 조회해 분기 처리
+5. 체결 발생 시 반대편 주문 취소 후 기준가 리셋
+6. 거래 종료 시점(15:30 KST)에는 미체결 주문 전체 취소
 
-## 🚀 설치
+## 전체 실행 흐름
 
-### 1. 의존성 설치
+```text
+main.py
+   -> load_config()               (config.py)
+   -> get_token()                 (auth.py)
+   -> KISApiClient(...)           (api_client.py)
+   -> SamsungAutoTrader.run()     (trader.py)
 
-```bash
-cd /workspaces/open-trading-api
-pip install -r requirements.txt
+run() 루프 내부
+   -> 거래시간 확인 (KST 기준)
+   -> _execute_cycle()
+       -> base_price 없음
+            -> _set_base_price()              (market_data.get_current_price)
+            -> _place_grid_orders()           (orders.place_limit_buy/sell)
+       -> base_price 있음
+            -> _check_and_handle_execution()  (orders.query_pending_orders, cancel_order, query_filled_orders)
+   -> poll_interval_seconds 만큼 대기
+   -> 종료 시 _cancel_all_pending_orders()
 ```
 
-### 2. 환경변수 설정
+## 자동매매 로직 상세
 
-#### GitHub Secrets 설정
+### 1) 거래시간 게이트
 
-GitHub 저장소 > Settings > Secrets and variables > Actions에서 다음 생성:
-- `GH_APPKEY`: 발급받은 Application Key
-- `GH_APPSECRET`: 발급받은 Application Secret
-- `GH_ACCOUNT`: 거래 계좌번호
-Codespace에서 실행 시 `gh` CLI를 통해 자동으로 로드됩니다.
+- 기준: 한국시간(KST)
+- 시작 전: 최대 60초 단위로 대기
+- 종료 이후: 미체결 주문 전체 취소 후 종료
 
-### 3. API 환경 선택 (필수)
+구현 위치: `SamsungAutoTrader.run()`
 
-#### 모의투자 (기본값)
-```bash
-# 기본적으로 모의투자 서버로 설정됨
-python -m samsung_auto_trader.main
-```
+### 2) 첫 사이클: 기준가 설정 + 그리드 주문 배치
 
-#### 실거래
-```bash
-export GH_API_ROOT="https://openapi.koreainvestment.com:9443"
-python -m samsung_auto_trader.main
-```
+- `base_price`가 없으면 현재가를 조회해 기준가 설정
+- 매수 주문가: `base_price - price_margin` (최소 1원)
+- 매도 주문가: `base_price + price_margin` (보유 수량이 1주 이상일 때만)
+- 주문 응답에서 주문번호(`ODNO`)와 지점/원주문조직번호(`ORD_SEAT`/`KRX_FWDG_ORD_ORGNO`) 저장
 
-## 💻 사용 방법
+구현 위치:
 
-### 로컬 실행
+- 기준가 설정: `SamsungAutoTrader._set_base_price()`
+- 주문 배치: `SamsungAutoTrader._place_grid_orders()`
 
-```bash
-cd /workspaces/open-trading-api
+### 3) 이후 사이클: 체결 상태 점검 및 분기
 
-# 환경변수 설정
-export GH_APPKEY="your_key"
-export GH_APPSECRET="your_secret"
-export GH_ACCOUNT="your_account"
+- `query_pending_orders()`로 미체결 주문 목록 조회
+- 저장해둔 주문번호(`buy_order_number`, `sell_order_number`)가 미체결 목록에 없으면 체결 후보로 판단
+- 체결 케이스별 처리:
+   - 매수만 체결: 매도 주문 취소 -> 새 기준가 설정
+   - 매도만 체결: 매수 주문 취소 -> 새 기준가 설정
+   - 둘 다 미체결: 유지
+   - 둘 다 체결 후보: 재조회 + 체결내역 조회(`query_filled_orders`)로 확인 후 기준가 리셋
 
-# 실행
-python -m samsung_auto_trader.main
-```
+구현 위치: `SamsungAutoTrader._check_and_handle_execution()`
 
-### GitHub Actions 실행
+### 4) 종료 시 정리
 
-1. GitHub 저장소에 Secrets 추가 (위 참고)
-2. Actions 탭 > "Run Samsung Auto Trader" 선택
-3. "Run workflow" 클릭
-4. 로그에서 실행 결과 확인
+- 종료 시점에 종목의 미체결 주문을 순회하며 취소 요청
+- 주문번호/브랜치 누락 시 해당 주문은 건너뛰고 로그 경고
 
-## 📊 거래 전략
+구현 위치: `SamsungAutoTrader._cancel_all_pending_orders()`
 
-### 매매 로직
+## 핵심 클래스/함수/변수 정리
 
-```
-1. 현재가 조회 (15분 간격)
-   ↓
-2. 계좌 조회 (보유 종목, 사용가능 현금)
-   ↓
-3. 결정:
-   - 보유하지 않음 + 미주문 → 매수 (현재가 - 2,000 KRW)
-   - 보유함 + 미주문 → 매도 (현재가 + 2,000 KRW)
-   - 주문 완료 → 대기
-   ↓
-4. 주문 체결 확인
-   ↓
-5. 900초(15분) 대기 후 반복
-```
+### 핵심 클래스
 
-### 주요 매개변수
+- `SamsungAutoTrader` (`trader.py`)
+   - 자동매매 상태와 사이클 전체를 관리하는 오케스트레이터
+- `KISApiClient` (`api_client.py`)
+   - KIS API 공통 호출 래퍼(헤더/TR_ID 정규화/재시도/백오프/HashKey)
+- `Config` (`config.py`)
+   - 실행 파라미터를 캡슐화하는 설정 데이터 클래스
 
-| 파라미터 | 값 | 설명 |
-|---------|-----|------|
-| `symbol` | 005930 | 삼성전자 종목코드 |
-| `price_margin` | 2,000 KRW | 현재가 기준 매수/매도 호가 |
-| `order_quantity` | 1주 | 한 번의 주문 수량 |
-| `poll_interval_seconds` | 900 | 시장가 조회 간격 |
-| `trading_start` | 09:10 | 거래 시작 시간 |
-| `trading_end` | 15:30 | 거래 종료 시간 |
+### 핵심 함수
 
-## 📁 프로젝트 구조
+- 진입점
+   - `main.main()`
+- 인증
+   - `auth.get_token()`
+- 시세
+   - `market_data.get_current_price()`
+- 계좌
+   - `account.query_account_balance()`
+   - `account.find_symbol_holding()`
+   - `account.parse_holdings_quantity()`
+- 주문
+   - `orders.place_limit_buy()`
+   - `orders.place_limit_sell()`
+   - `orders.query_pending_orders()`
+   - `orders.query_filled_orders()`
+   - `orders.cancel_order()`
+- 트레이딩 제어
+   - `SamsungAutoTrader.run()`
+   - `SamsungAutoTrader._execute_cycle()`
+   - `SamsungAutoTrader._set_base_price()`
+   - `SamsungAutoTrader._place_grid_orders()`
+   - `SamsungAutoTrader._check_and_handle_execution()`
+   - `SamsungAutoTrader._cancel_all_pending_orders()`
 
-```
-samsung_auto_trader/
-├── __init__.py              # 패키지 마커
-├── config.py                # 설정 로드 (환경변수 → GitHub Secrets)
-├── logger.py                # 중앙식 로깅
-├── auth.py                  # 토큰 발급 및 캐싱
-├── api_client.py            # KIS API 요청 래퍼
-├── market_data.py           # 현재가 조회
-├── account.py               # 계좌 조회 (잔고, 보유)
-├── orders.py                # 주문 실행 (매수/매도)
-├── trader.py                # 거래 로직 오케스트레이션
-├── main.py                  # 진입점
-├── token_cache.json         # 토큰 캐시 (자동 생성)
-└── README.md                # 이 파일
-```
+### 핵심 상태 변수
 
-## 🔌 KIS Open API 엔드포인트
+- `base_price`: 현재 그리드의 기준 가격
+- `buy_order_number`, `sell_order_number`: 현재 추적 중인 매수/매도 주문번호
+- `buy_order_branch`, `sell_order_branch`: 취소 요청 시 필요한 주문 조직/지점 정보
+
+### 핵심 설정 변수 (`Config`)
+
+- `symbol`: 기본 거래 종목 (`005930`)
+- `price_margin`: 기준가 대비 주문 간격 (기본 `2000`)
+- `order_quantity`: 기본 주문 수량 (현재 로직에서 매수는 1주 사용)
+- `poll_interval_seconds`: 사이클 간 대기 (기본 `300`초)
+- `trading_start`, `trading_end`: 거래 허용 시간 (`09:10`~`15:30`, KST)
+
+## 파일 간 유기적 연동
+
+### 1) 시작 계층
+
+- `main.py`는 전체 실행의 조립자(composer) 역할을 수행
+- 설정(`config`) -> 인증(`auth`) -> API 클라이언트(`api_client`) -> 전략 실행기(`trader`) 순으로 의존성 주입
+
+### 2) 전략 계층
+
+- `trader.py`는 도메인 로직의 중심
+- 외부 호출은 직접 API를 때리지 않고, 기능별 모듈 함수를 호출
+   - 시세: `market_data.py`
+   - 잔고/보유: `account.py`
+   - 주문/정정취소/체결조회: `orders.py`
+
+### 3) 인프라 계층
+
+- `api_client.py`가 HTTP 상세 구현을 담당
+   - 모의/실전 환경에 따른 TR_ID 정규화(T* -> V*)
+   - 429/5xx 재시도와 exponential backoff+jitter
+   - 주문 API의 hashkey 자동 처리
+- `auth.py`는 토큰 발급과 캐시 파일(`token_cache.json`) 수명주기 관리
+
+### 4) 공통 계층
+
+- `logger.py`는 단일 로거 이름(`samsung_auto_trader`)로 전 모듈 로그 포맷 통일
+
+즉, `trader.py`가 비즈니스 의사결정을 담당하고, 나머지 파일은 시세/계좌/주문/통신/인증을 역할별로 분리해 지원하는 구조입니다.
+
+## 주요 API/TR ID
 
 | 기능 | TR_ID | 메서드 | 엔드포인트 |
 |------|-------|--------|-----------|
 | 토큰 발급 | - | POST | `/oauth2/tokenP` |
 | 현재가 조회 | FHKST01010100 | GET | `/uapi/domestic-stock/v1/quotations/inquire-price` |
-| 매수 주문 | TTTC0802U | POST | `/uapi/domestic-stock/v1/trading/order-cash` |
-| 매도 주문 | TTTC0801U | POST | `/uapi/domestic-stock/v1/trading/order-cash` |
+| 현금 매수 주문 | TTTC0802U | POST | `/uapi/domestic-stock/v1/trading/order-cash` |
+| 현금 매도 주문 | TTTC0801U | POST | `/uapi/domestic-stock/v1/trading/order-cash` |
+| 주문취소 | TTTC0803U | POST | `/uapi/domestic-stock/v1/trading/order-cash` |
+| 일별 주문조회(체결/미체결) | TTTC8001R | GET | `/uapi/domestic-stock/v1/trading/inquire-daily-ccld` |
 | 잔고 조회 | TTTC8434R | GET | `/uapi/domestic-stock/v1/trading/inquire-balance` |
 
-## 🔑 토큰 캐싱 메커니즘
+참고: 모의투자 서버(`openapivts`)에서는 `KISApiClient`가 TR_ID를 자동 변환해 사용합니다.
 
-- 발급받은 토큰을 `token_cache.json`에 저장
-- 토큰 유효시간(기본 23시간) 내에서 재사용
-- 유효시간 만료 시 자동 갱신
-- 일일 API 요청 수 최소화
+## 실행 방법
 
-## 🐛 로깅
-
-모든 작업이 `samsung_auto_trader` 로거로 기록됩니다:
-
-```
-2026-06-12 14:30:45 INFO Current price: 70,500 KRW
-2026-06-12 14:30:46 INFO Holdings: 1 share
-2026-06-12 14:30:47 INFO Placing sell order at 72,500 KRW
-2026-06-12 14:30:50 INFO Order placed successfully
-```
-
-## ⚙️ 설정 커스터마이징
-
-`config.py`의 `load_config()` 함수에서 기본값 변경 가능:
-
-```python
-return Config(
-    symbol="005930",              # 종목코드 변경 가능
-    price_margin=2000,            # 호가 간격 조정
-    order_quantity=1,             # 주문 수량 변경
-    poll_interval_seconds=900,    # 폴링 간격 조정
-    trading_start=time(9, 10),    # 거래 시작시간
-    trading_end=time(15, 30),     # 거래 종료시간
-)
-```
-
-## 🔒 보안
-
-- **credential 관리**: 모든 인증정보는 환경변수 또는 GitHub Secrets에서만 로드
-- **하드코딩 금지**: 소스코드에 appkey/appsecret 없음
-- **HTTPS 전용**: 모든 API 통신은 HTTPS
-- **Hashkey 서명**: 주문 요청은 KIS Hashkey로 서명
-
-## 📈 다음 단계
-
-- [ ] 전략 개선: 단순 ±2,000 KRW → 이동평균 기반 전략
-- [ ] 다중 종목 지원: 현재 삼성전자(005930)만 지원
-- [ ] 손실제한(Stop Loss) 추가
-- [ ] 매매 리포트 생성
-- [ ] Slack/Discord 알림 연동
-
-## ⚠️ 주의사항
-
-1. **모의투자 확인**: 기본값은 모의투자 서버입니다. 실거래를 원할 시 `GH_API_ROOT` 변경 필수
-2. **거래시간**: 09:10~15:30 외 거래 불가
-3. **API 한도**: 한국투자증권의 API Rate Limit 준수
-4. **손실 책임**: 자동매매로 발생하는 손실은 사용자 책임
-
-## 🆘 문제 해결
-
-### "GH_APPKEY not found" 에러
-
-```bash
-# 환경변수 설정 확인
-echo $GH_APPKEY
-
-# GitHub Secrets 설정 확인 (Codespace)
-gh secret get GH_APPKEY
-```
-
-### 주문이 체결되지 않음
-
-- 거래시간 확인: 09:10 ~ 15:30
-- 지정가가 현재가에서 벗어났는지 확인
-- 계좌 잔금 또는 주식 보유 확인
-
-### 토큰 만료 에러
-
-자동으로 갱신됩니다. 수동 갱신을 원할 시:
-
-```bash
-rm samsung_auto_trader/token_cache.json
 python -m samsung_auto_trader.main
+
+# 실거래
+# export GH_API_ROOT="https://openapi.koreainvestment.com:9443"
+# python -m samsung_auto_trader.main
 ```
 
-### 실제 거래 내용
+## 주의사항
 
-<img width="1276" height="578" alt="image" src="https://github.com/user-attachments/assets/d8bb82d3-b9c1-4fe3-977d-3644e3138714" />
+1. 기본 API Root는 모의투자 서버입니다.
+2. 거래시간 종료 시 미체결 취소를 수행하지만, 네트워크/API 상태에 따라 예외가 발생할 수 있으므로 로그 확인이 필요합니다.
 

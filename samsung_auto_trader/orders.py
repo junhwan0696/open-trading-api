@@ -7,6 +7,8 @@ from .logger import get_logger
 ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
 PENDING_ORDER_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 CANCEL_ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+# Use production TR IDs as canonical values.
+# KISApiClient normalizes T* -> V* automatically when GH_API_ROOT is the VTS(simulation) host.
 BUY_TR_ID = "TTTC0802U"
 SELL_TR_ID = "TTTC0801U"
 PENDING_ORDER_TR_ID = "TTTC8001R"
@@ -126,13 +128,23 @@ def place_limit_sell(client: KISApiClient, config: Config, symbol: str, quantity
     return response
 
 
-def query_pending_orders(client: KISApiClient, config: Config, symbol: str) -> List[Dict[str, Any]]:
-    """주문미체결내역 조회 - inquire-daily-ccld API 사용"""
+def _query_daily_ccld_orders(
+    client: KISApiClient,
+    config: Config,
+    symbol: str,
+    ccld_dvsn: str,
+) -> List[Dict[str, Any]]:
+    """inquire-daily-ccld 조회 공통 함수.
+
+    ccld_dvsn:
+    - 01: 체결
+    - 02: 미체결
+    """
     logger = get_logger()
     from datetime import datetime
-    
+
     today = datetime.now().strftime("%Y%m%d")
-    
+
     params = {
         "CANO": config.account,
         "ACNT_PRDT_CD": config.product_code,
@@ -141,7 +153,7 @@ def query_pending_orders(client: KISApiClient, config: Config, symbol: str) -> L
         "SLL_BUY_DVSN_CD": "00", # 매도/매수 전체
         "INQR_DVSN": "00",       # 역순
         "PDNO": symbol,
-        "CCLD_DVSN": "01",       # 01 = 미체결, 02 = 체결
+        "CCLD_DVSN": ccld_dvsn,   # 00=전체, 01=체결, 02=미체결
         "ORD_GNO_BRNO": "",
         "ODNO": "",
         "INQR_DVSN_3": "00",
@@ -152,25 +164,35 @@ def query_pending_orders(client: KISApiClient, config: Config, symbol: str) -> L
     
     response = client.request("GET", PENDING_ORDER_PATH, params=params, tr_id=PENDING_ORDER_TR_ID)
     if not response:
-        logger.warning("Pending orders query returned no response")
-        return []
-    
+        raise RuntimeError("Pending orders query returned no response")
+
     if response.get("rt_cd") != "0":
-        logger.warning("Pending orders query failed: %s", response.get("msg1"))
-        return []
-    
+        raise RuntimeError(f"Pending orders query failed: {response.get('msg1')}")
+
     # output1 또는 output2에 미체결 주문 데이터가 있을 수 있음
     output = response.get("output1", [])
     if not output:
         output = response.get("output2", [])
-    
+
     if isinstance(output, dict):
         output = [output] if output else []
     elif not isinstance(output, list):
         output = []
-    
-    logger.info("Found %d pending orders for %s", len(output), symbol)
+
+    state_text = "filled" if ccld_dvsn == "01" else "pending" if ccld_dvsn == "02" else "daily-ccld"
+    logger.info("Found %d %s orders for %s", len(output), state_text, symbol)
+
     return output
+
+
+def query_pending_orders(client: KISApiClient, config: Config, symbol: str) -> List[Dict[str, Any]]:
+    """주문미체결내역 조회 - inquire-daily-ccld API 사용"""
+    return _query_daily_ccld_orders(client, config, symbol, ccld_dvsn="02")
+
+
+def query_filled_orders(client: KISApiClient, config: Config, symbol: str) -> List[Dict[str, Any]]:
+    """주문체결내역 조회 - inquire-daily-ccld API 사용"""
+    return _query_daily_ccld_orders(client, config, symbol, ccld_dvsn="01")
 
 
 def cancel_order(client: KISApiClient, config: Config, order_number: str, order_branch: str, quantity: int) -> Dict[str, Any]:
@@ -182,8 +204,8 @@ def cancel_order(client: KISApiClient, config: Config, order_number: str, order_
         "KRX_FWDG_ORD_ORGNO": order_branch,
         "ORGN_ODNO": order_number,
         "ORD_DVSN": "00",
-        "ORD_QTY": str(quantity),
-        "QTY_ALL_ORD_YN": "N",
+        "ORD_QTY": "0",
+        "QTY_ALL_ORD_YN": "Y",
         "CTAC_TLNO": "",
         "SLL_TYPE": "01",
         "ALGO_NO": "",

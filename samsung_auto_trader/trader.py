@@ -12,7 +12,13 @@ from .account import (
 from .config import Config
 from .logger import get_logger
 from .market_data import get_current_price
-from .orders import place_limit_buy, place_limit_sell, query_pending_orders, cancel_order
+from .orders import (
+    cancel_order,
+    place_limit_buy,
+    place_limit_sell,
+    query_filled_orders,
+    query_pending_orders,
+)
 
 
 class SamsungAutoTrader:
@@ -25,6 +31,39 @@ class SamsungAutoTrader:
         self.sell_order_number: Optional[str] = None
         self.buy_order_branch: Optional[str] = None
         self.sell_order_branch: Optional[str] = None
+
+    @staticmethod
+    def _first_value(data: dict, *keys: str) -> Optional[str]:
+        for key in keys:
+            value = data.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    @staticmethod
+    def _normalize_order_number(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        # Some responses may differ only by leading zeros.
+        if text.isdigit():
+            return str(int(text))
+        return text
+
+    def _extract_pending_order_numbers(self, pending_orders: list[dict]) -> set[str]:
+        return {
+            normalized
+            for order in pending_orders
+            for normalized in [
+                self._normalize_order_number(self._first_value(order, "ODNO", "odno"))
+            ]
+            if normalized is not None
+        }
 
     def run(self) -> None:
         self.logger.info(
@@ -138,8 +177,17 @@ class SamsungAutoTrader:
         )
         try:
             buy_response = place_limit_buy(self.client, self.config, self.config.symbol, 1, buy_price)
-            self.buy_order_number = buy_response.get("output", {}).get("ODNO")
-            self.buy_order_branch = buy_response.get("output", {}).get("ORD_SEAT")
+            buy_output = buy_response.get("output") or buy_response.get("output1") or {}
+            if not isinstance(buy_output, dict):
+                buy_output = {}
+            self.buy_order_number = self._first_value(buy_output, "ODNO", "odno")
+            self.buy_order_branch = self._first_value(
+                buy_output,
+                "ORD_SEAT",
+                "ord_seat",
+                "KRX_FWDG_ORD_ORGNO",
+                "ord_gno_brno",
+            )
             self.logger.info("Buy order placed: order_number=%s", self.buy_order_number)
         except Exception as exc:
             self.logger.warning("Failed to place buy order: %s", exc)
@@ -158,8 +206,17 @@ class SamsungAutoTrader:
             )
             try:
                 sell_response = place_limit_sell(self.client, self.config, self.config.symbol, held_quantity, sell_price)
-                self.sell_order_number = sell_response.get("output", {}).get("ODNO")
-                self.sell_order_branch = sell_response.get("output", {}).get("ORD_SEAT")
+                sell_output = sell_response.get("output") or sell_response.get("output1") or {}
+                if not isinstance(sell_output, dict):
+                    sell_output = {}
+                self.sell_order_number = self._first_value(sell_output, "ODNO", "odno")
+                self.sell_order_branch = self._first_value(
+                    sell_output,
+                    "ORD_SEAT",
+                    "ord_seat",
+                    "KRX_FWDG_ORD_ORGNO",
+                    "ord_gno_brno",
+                )
                 self.logger.info("Sell order placed: order_number=%s", self.sell_order_number)
             except Exception as exc:
                 self.logger.warning("Failed to place sell order: %s", exc)
@@ -178,13 +235,15 @@ class SamsungAutoTrader:
             self.logger.warning("Unable to query pending orders: %s", exc)
             return
         
-        # 미체결 주문 번호 수집
-        pending_order_numbers = [order.get("ODNO") for order in pending_orders]
-        
-        # 매수 체결 여부 확인
-        buy_filled = self.buy_order_number and self.buy_order_number not in pending_order_numbers
-        # 매도 체결 여부 확인
-        sell_filled = self.sell_order_number and self.sell_order_number not in pending_order_numbers
+        # 미체결 주문 번호 수집 (응답 키 대소문자/포맷 차이 보정)
+        pending_order_numbers = self._extract_pending_order_numbers(pending_orders)
+
+        normalized_buy_order = self._normalize_order_number(self.buy_order_number)
+        normalized_sell_order = self._normalize_order_number(self.sell_order_number)
+
+        # 매수/매도 체결 여부 확인
+        buy_filled = bool(normalized_buy_order) and normalized_buy_order not in pending_order_numbers
+        sell_filled = bool(normalized_sell_order) and normalized_sell_order not in pending_order_numbers
         
         self.logger.info(
             "Order status check: buy_filled=%s sell_filled=%s buy_order=%s sell_order=%s pending_count=%s",
@@ -203,6 +262,12 @@ class SamsungAutoTrader:
                     cancel_order(self.client, self.config, self.sell_order_number, self.sell_order_branch, 1)
                 except Exception as exc:
                     self.logger.warning("Failed to cancel sell order: %s", exc)
+            elif self.sell_order_number:
+                self.logger.warning(
+                    "Cannot cancel sell order %s: order branch (KRX_FWDG_ORD_ORGNO) is unavailable. "
+                    "Order may remain open on the exchange.",
+                    self.sell_order_number,
+                )
             
             # 매수가를 새로운 기준가로 설정
             price = get_current_price(self.client, self.config.symbol)
@@ -222,6 +287,12 @@ class SamsungAutoTrader:
                     cancel_order(self.client, self.config, self.buy_order_number, self.buy_order_branch, 1)
                 except Exception as exc:
                     self.logger.warning("Failed to cancel buy order: %s", exc)
+            elif self.buy_order_number:
+                self.logger.warning(
+                    "Cannot cancel buy order %s: order branch (KRX_FWDG_ORD_ORGNO) is unavailable. "
+                    "Order may remain open on the exchange.",
+                    self.buy_order_number,
+                )
             
             # 매도가를 새로운 기준가로 설정
             price = get_current_price(self.client, self.config.symbol)
@@ -239,6 +310,46 @@ class SamsungAutoTrader:
         
         # 상황 D: 둘 다 체결 (에지 케이스)
         elif buy_filled and sell_filled:
+            # Pending list is eventually consistent. Recheck once before confirming both filled.
+            try:
+                rechecked_pending_orders = query_pending_orders(self.client, self.config, self.config.symbol)
+            except Exception as exc:
+                self.logger.warning("Unable to recheck pending orders for both-filled confirmation: %s", exc)
+                return
+
+            rechecked_pending_order_numbers = self._extract_pending_order_numbers(rechecked_pending_orders)
+            buy_filled = bool(normalized_buy_order) and normalized_buy_order not in rechecked_pending_order_numbers
+            sell_filled = bool(normalized_sell_order) and normalized_sell_order not in rechecked_pending_order_numbers
+
+            if not (buy_filled and sell_filled):
+                self.logger.info(
+                    "Both-filled check was inconclusive on recheck. Waiting for next cycle. buy_filled=%s sell_filled=%s pending_count=%s",
+                    buy_filled,
+                    sell_filled,
+                    len(rechecked_pending_orders),
+                )
+                return
+
+            # Confirm with filled-order inquiry to avoid false positives from pending-list inconsistency.
+            try:
+                filled_orders = query_filled_orders(self.client, self.config, self.config.symbol)
+            except Exception as exc:
+                self.logger.warning("Unable to query filled orders for both-filled confirmation: %s", exc)
+                return
+
+            filled_order_numbers = self._extract_pending_order_numbers(filled_orders)
+            buy_filled_confirmed = bool(normalized_buy_order) and normalized_buy_order in filled_order_numbers
+            sell_filled_confirmed = bool(normalized_sell_order) and normalized_sell_order in filled_order_numbers
+
+            if not (buy_filled_confirmed and sell_filled_confirmed):
+                self.logger.info(
+                    "Both orders absent in pending list but not confirmed in filled list. Waiting for next cycle. buy_confirmed=%s sell_confirmed=%s filled_count=%s",
+                    buy_filled_confirmed,
+                    sell_filled_confirmed,
+                    len(filled_orders),
+                )
+                return
+
             self.logger.info("Both orders filled. Resetting and setting new base price.")
             price = get_current_price(self.client, self.config.symbol)
             if price is not None:
@@ -258,9 +369,19 @@ class SamsungAutoTrader:
             return
         
         for order in pending_orders:
-            order_number = order.get("ODNO")
-            order_branch = order.get("ORD_SEAT")
-            quantity = int(order.get("ORD_QTY", 0))
+            order_number = self._first_value(order, "ODNO", "odno")
+            order_branch = self._first_value(
+                order,
+                "ORD_SEAT",
+                "ord_seat",
+                "ord_gno_brno",
+                "ORD_GNO_BRNO",
+            )
+            quantity_text = self._first_value(order, "ORD_QTY", "ord_qty", "RMN_QTY", "rmn_qty") or "0"
+            try:
+                quantity = int(quantity_text)
+            except ValueError:
+                quantity = 0
             
             if not order_number or not order_branch:
                 self.logger.warning("Skipping order without number or branch: %s", order)

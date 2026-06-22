@@ -80,7 +80,9 @@ def parse_holdings_quantity(holding: Optional[Dict[str, Any]]) -> int:
     if not holding:
         return 0
 
-    quantity = holding.get("hldg_qty") or holding.get("HLDG_QTY") or holding.get("ord_psbl_qty") or holding.get("ORD_PSBQTY")
+    # Use only actual holding quantity fields.
+    # order-possible quantity may differ and can cause oversized sell orders.
+    quantity = holding.get("hldg_qty") or holding.get("HLDG_QTY")
     if quantity in (None, ""):
         return 0
 

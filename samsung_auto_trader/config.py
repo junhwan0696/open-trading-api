@@ -82,7 +82,7 @@ def load_config() -> Config:
         symbol="005930",
         price_margin=2000,
         order_quantity=1,
-        poll_interval_seconds=900,
+        poll_interval_seconds=300,
         trading_start=time(9, 10),   # 한국 시간 09:10
         trading_end=time(15, 30),    # 한국 시간 15:30
         token_cache_path=token_cache_path,

@@ -1,4 +1,5 @@
 import json
+import random
 import time
 from typing import Any, Dict, Optional
 
@@ -16,18 +17,25 @@ class KISApiClient:
         self.config = config
         self.token = token
         self.session = Session()
-        # Configure requests session with retries/backoff for transient network errors
+        # Retry only connection-level failures at adapter layer.
+        # HTTP status retries are handled explicitly in request().
         retries = Retry(
-            total=5,
+            total=3,
+            connect=3,
+            read=3,
+            status=0,
             backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[],
             allowed_methods=["GET", "POST"],
+            raise_on_status=False,
         )
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         # Request timeout in seconds (used for both GET and POST)
         self.request_timeout = 60
+        self.max_attempts = 5
+        self.base_backoff_seconds = 1.0
         self.logger = get_logger()
 
     def _normalize_tr_id(self, tr_id: str) -> str:
@@ -71,10 +79,9 @@ class KISApiClient:
     ) -> Dict[str, Any]:
         url = f"{self.config.api_root}{path}"
         headers = self._headers(tr_id)
-        attempt = 0
+        retriable_statuses = {429, 500, 502, 503, 504}
 
-        while attempt < 3:
-            attempt += 1
+        for attempt in range(1, self.max_attempts + 1):
             try:
                 self.logger.debug("Sending request %s %s attempt %d", method, url, attempt)
                 if post:
@@ -94,16 +101,34 @@ class KISApiClient:
                         timeout=self.request_timeout,
                     )
 
-                if response.status_code != 200:
+                if response.status_code in retriable_statuses:
                     self.logger.warning(
-                        "API call %s returned status %s", url, response.status_code
+                        "API call %s returned retriable status %s (attempt %d/%d)",
+                        url,
+                        response.status_code,
+                        attempt,
+                        self.max_attempts,
                     )
+                    if attempt < self.max_attempts:
+                        retry_after = response.headers.get("Retry-After")
+                        if retry_after and retry_after.isdigit():
+                            sleep_seconds = float(retry_after)
+                        else:
+                            sleep_seconds = self.base_backoff_seconds * (2 ** (attempt - 1))
+                            sleep_seconds += random.uniform(0.0, 0.3)
+                        time.sleep(sleep_seconds)
+                        continue
+
+                if response.status_code != 200:
+                    self.logger.warning("API call %s returned status %s", url, response.status_code)
                 response.raise_for_status()
                 return response.json()
             except (requests.RequestException, ValueError) as exc:
                 self.logger.error("Request failed for %s: %s", url, exc)
-                if attempt >= 3:
+                if attempt >= self.max_attempts:
                     raise
-                time.sleep(2 ** attempt)
+                sleep_seconds = self.base_backoff_seconds * (2 ** (attempt - 1))
+                sleep_seconds += random.uniform(0.0, 0.3)
+                time.sleep(sleep_seconds)
 
         raise RuntimeError("Unable to complete API request")
