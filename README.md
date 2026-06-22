@@ -181,6 +181,17 @@ python -m samsung_auto_trader.main
  python -m samsung_auto_trader.main
 ```
 
+# 실제 거래 기록
+아래는 터미널 로그 기록입니다
+<img width="1403" height="772" alt="image" src="https://github.com/user-attachments/assets/73d83712-1510-4459-91d3-cd3958dc86b4" />
+
+아래는 한투 모의투자 화면에서 체결 주문 화면입니다.
+<img width="1080" height="1429" alt="image" src="https://github.com/user-attachments/assets/87701718-fa58-4add-a627-44030a1263d6" />
+<img width="1080" height="1438" alt="image" src="https://github.com/user-attachments/assets/24cfc94e-fdf3-492f-a1bc-f4844496af9f" />
+
+
+
+
 ## 주의사항
 
 1. 기본 API Root는 모의투자 서버입니다.
