@@ -179,8 +179,8 @@ run() 루프 내부
 python -m samsung_auto_trader.main
 
 # 실거래
-# export GH_API_ROOT="https://openapi.koreainvestment.com:9443"
-# python -m samsung_auto_trader.main
+ export GH_API_ROOT="https://openapi.koreainvestment.com:9443"
+ python -m samsung_auto_trader.main
 ```
 
 ## 주의사항
