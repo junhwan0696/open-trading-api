@@ -188,7 +188,7 @@ python -m samsung_auto_trader.main
 ### 아래는 한투 모의투자 화면에서 체결 주문 화면입니다.
 처음 실행의 결과로 base_price가 353,000원으로 설정되었고, 로직에 따라 현재 가지고 있던 3개의 주식이 모두 355,000원에 매도 주문이 들어갔고, 새로 1개를 351,000원에 매수 주문했습니다. 
 
-<img width="440" height="582" alt="image" src="https://github.com/user-attachments/assets/87701718-fa58-4add-a627-44030a1263d6" />, <img width="440" height="582" alt="image" src="https://github.com/user-attachments/assets/24cfc94e-fdf3-492f-a1bc-f4844496af9f" />
+<img width="430" height="582" alt="image" src="https://github.com/user-attachments/assets/87701718-fa58-4add-a627-44030a1263d6" />, <img width="440" height="582" alt="image" src="https://github.com/user-attachments/assets/24cfc94e-fdf3-492f-a1bc-f4844496af9f" />
 
 
 
